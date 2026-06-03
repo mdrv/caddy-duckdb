@@ -1,0 +1,22 @@
+# Binaries
+caddy-duckdb
+*.exe
+
+# Build artifacts
+.tmp/
+.gocache/
+*.db
+*.db.wal
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archives (created by partitioning at runtime)
+archive/
