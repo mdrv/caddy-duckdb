@@ -160,25 +160,16 @@ func resolveParams(bindings []ParamBinding, r *http.Request, logger *zap.Logger)
 
 	if hasBody && r.Body != nil {
 		bodyBytes, err := io.ReadAll(r.Body)
-		logger.Debug("body read", zap.Int("bytes", len(bodyBytes)), zap.Error(err), zap.String("raw", string(bodyBytes)))
 		if err == nil {
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			var body interface{}
-			if uerr := json.Unmarshal(bodyBytes, &body); uerr == nil {
-				logger.Debug("body parsed", zap.String("type", fmt.Sprintf("%T", body)))
+			if json.Unmarshal(bodyBytes, &body) == nil {
 				if m, ok := body.(map[string]any); ok {
 					bodyMap = m
-					logger.Debug("body map keys", zap.Int("count", len(m)))
-				} else {
-					logger.Warn("body is not map[string]any", zap.String("type", fmt.Sprintf("%T", body)))
 				}
-			} else {
-				logger.Warn("body json unmarshal failed", zap.Error(uerr), zap.String("raw", string(bodyBytes)))
 			}
 			bodyParsed = true
 		}
-	} else {
-		logger.Debug("skipped body read", zap.Bool("hasBody", hasBody), zap.Bool("nilBody", r.Body == nil))
 	}
 
 	for _, b := range bindings {

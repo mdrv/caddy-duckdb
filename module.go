@@ -504,22 +504,22 @@ func parseParamInline(d *caddyfile.Dispenser) (ParamBinding, error) {
 			if !d.NextArg() {
 				return p, d.ArgErr()
 			}
-			p.Source = d.Val()
+			p.Source = strings.TrimRight(d.Val(), ",")
 		case "key":
 			if !d.NextArg() {
 				return p, d.ArgErr()
 			}
-			p.Key = d.Val()
+			p.Key = strings.TrimRight(d.Val(), ",")
 		case "type":
 			if !d.NextArg() {
 				return p, d.ArgErr()
 			}
-			p.Type = d.Val()
+			p.Type = strings.TrimRight(d.Val(), ",")
 		case "default":
 			if !d.NextArg() {
 				return p, d.ArgErr()
 			}
-			p.Default = d.Val()
+			p.Default = strings.TrimRight(d.Val(), ",")
 		case "min":
 			if !d.NextArg() {
 				return p, d.ArgErr()
@@ -551,7 +551,7 @@ func parseParamInline(d *caddyfile.Dispenser) (ParamBinding, error) {
 			if !d.NextArg() {
 				return p, d.ArgErr()
 			}
-			p.Pattern = d.Val()
+			p.Pattern = strings.TrimRight(d.Val(), ",")
 		default:
 			return p, d.Errf("unknown param option: %s", d.Val())
 		}
