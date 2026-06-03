@@ -687,6 +687,15 @@ func parsePartitionConfig(d *caddyfile.Dispenser) (*PartConfig, error) {
 				return nil, d.ArgErr()
 			}
 			pc.TimestampCol = d.Val()
+		case "timestamp_type":
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			v := strings.ToLower(d.Val())
+			if v != "timestamptz" && v != "epoch" && v != "auto" {
+				return nil, d.Errf("timestamp_type must be timestamptz, epoch, or auto, got %q", v)
+			}
+			pc.TimestampType = v
 		case "interval":
 			if !d.NextArg() {
 				return nil, d.ArgErr()
@@ -791,15 +800,16 @@ type RateLimit struct {
 }
 
 type PartConfig struct {
-	Tables       []string       `json:"tables"`
-	TimestampCol string         `json:"timestamp_col,omitempty"`
-	Interval     string         `json:"interval,omitempty"`
-	Format       string         `json:"format,omitempty"`
-	Path         string         `json:"path,omitempty"`
-	Filename     string         `json:"filename,omitempty"`
-	KeepDays     int            `json:"keep_days,omitempty"`
-	Compress     string         `json:"compress,omitempty"`
-	MaxAge       caddy.Duration `json:"max_age,omitempty"`
+	Tables        []string       `json:"tables"`
+	TimestampCol  string         `json:"timestamp_col,omitempty"`
+	TimestampType string         `json:"timestamp_type,omitempty"`
+	Interval      string         `json:"interval,omitempty"`
+	Format        string         `json:"format,omitempty"`
+	Path          string         `json:"path,omitempty"`
+	Filename      string         `json:"filename,omitempty"`
+	KeepDays      int            `json:"keep_days,omitempty"`
+	Compress      string         `json:"compress,omitempty"`
+	MaxAge        caddy.Duration `json:"max_age,omitempty"`
 }
 
 type matchedRoute struct {
@@ -878,12 +888,29 @@ func (m *Middleware) archiveTable(ctx context.Context, table string, pc *PartCon
 		tsCol = "ts"
 	}
 
-	exportSQL := fmt.Sprintf(
-		"COPY (SELECT * FROM %s WHERE %s < $1) TO '%s' (FORMAT %s, COMPRESSION '%s')",
-		table, tsCol, archivePath, format, pc.Compress,
-	)
+	isEpoch := m.isEpochColumn(ctx, table, tsCol, pc.TimestampType)
 
-	res, err := m.db.ExecContext(ctx, exportSQL, cutoff)
+	var exportSQL string
+	var delSQL string
+	var arg any
+
+	if isEpoch {
+		exportSQL = fmt.Sprintf(
+			"COPY (SELECT * FROM %s WHERE %s < $1) TO '%s' (FORMAT %s, COMPRESSION '%s')",
+			table, tsCol, archivePath, format, pc.Compress,
+		)
+		delSQL = fmt.Sprintf("DELETE FROM %s WHERE %s < $1", table, tsCol)
+		arg = cutoff.Unix()
+	} else {
+		exportSQL = fmt.Sprintf(
+			"COPY (SELECT * FROM %s WHERE %s < $1) TO '%s' (FORMAT %s, COMPRESSION '%s')",
+			table, tsCol, archivePath, format, pc.Compress,
+		)
+		delSQL = fmt.Sprintf("DELETE FROM %s WHERE %s < $1", table, tsCol)
+		arg = cutoff
+	}
+
+	res, err := m.db.ExecContext(ctx, exportSQL, arg)
 	if err != nil {
 		m.logger.Error("partition export failed", zap.String("table", table), zap.Error(err))
 		return
@@ -895,7 +922,7 @@ func (m *Middleware) archiveTable(ctx context.Context, table string, pc *PartCon
 		return
 	}
 
-	_, err = m.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE %s < $1", table, tsCol), cutoff)
+	_, err = m.db.ExecContext(ctx, delSQL, arg)
 	if err != nil {
 		m.logger.Error("partition delete failed", zap.String("table", table), zap.Error(err))
 		return
@@ -907,11 +934,33 @@ func (m *Middleware) archiveTable(ctx context.Context, table string, pc *PartCon
 		zap.String("table", table),
 		zap.String("file", archivePath),
 		zap.Int64("rows", affected),
+		zap.Bool("epoch_ts", isEpoch),
 	)
 
 	if pc.MaxAge > 0 {
 		m.purgeOldFiles(pc)
 	}
+}
+
+func (m *Middleware) isEpochColumn(ctx context.Context, table, col, hint string) bool {
+	switch hint {
+	case "epoch":
+		return true
+	case "timestamptz":
+		return false
+	}
+	var dataType string
+	err := m.db.QueryRowContext(ctx,
+		"SELECT data_type FROM information_schema.columns WHERE table_name = $1 AND column_name = $2",
+		table, col,
+	).Scan(&dataType)
+	if err != nil {
+		m.logger.Warn("could not detect timestamp column type, assuming timestamptz",
+			zap.String("table", table), zap.String("column", col), zap.Error(err))
+		return false
+	}
+	dt := strings.ToUpper(dataType)
+	return dt == "BIGINT" || dt == "INTEGER" || dt == "INT" || dt == "INT64"
 }
 
 func (m *Middleware) purgeOldFiles(pc *PartConfig) {

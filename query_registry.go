@@ -93,7 +93,7 @@ func (r *QueryRegistry) Execute(ctx context.Context, name string, req *http.Requ
 		return cached, &rq.def.Output, nil
 	}
 
-	args, orderedKeys, err := resolveParams(rq.def.Params, req)
+	args, orderedKeys, err := resolveParams(rq.def.Params, req, r.logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("param binding: %w", err)
 	}
@@ -143,7 +143,7 @@ func (rq *registeredQuery) setCached(data []map[string]any, ttl time.Duration) {
 	rq.cached = &cachedResult{data: data, expiresAt: time.Now().Add(ttl)}
 }
 
-func resolveParams(bindings []ParamBinding, r *http.Request) (map[string]any, []string, error) {
+func resolveParams(bindings []ParamBinding, r *http.Request, logger *zap.Logger) (map[string]any, []string, error) {
 	args := make(map[string]any, len(bindings))
 	var orderedKeys []string
 
@@ -160,16 +160,25 @@ func resolveParams(bindings []ParamBinding, r *http.Request) (map[string]any, []
 
 	if hasBody && r.Body != nil {
 		bodyBytes, err := io.ReadAll(r.Body)
+		logger.Debug("body read", zap.Int("bytes", len(bodyBytes)), zap.Error(err), zap.String("raw", string(bodyBytes)))
 		if err == nil {
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			var body interface{}
-			if json.Unmarshal(bodyBytes, &body) == nil {
+			if uerr := json.Unmarshal(bodyBytes, &body); uerr == nil {
+				logger.Debug("body parsed", zap.String("type", fmt.Sprintf("%T", body)))
 				if m, ok := body.(map[string]any); ok {
 					bodyMap = m
+					logger.Debug("body map keys", zap.Int("count", len(m)))
+				} else {
+					logger.Warn("body is not map[string]any", zap.String("type", fmt.Sprintf("%T", body)))
 				}
+			} else {
+				logger.Warn("body json unmarshal failed", zap.Error(uerr), zap.String("raw", string(bodyBytes)))
 			}
 			bodyParsed = true
 		}
+	} else {
+		logger.Debug("skipped body read", zap.Bool("hasBody", hasBody), zap.Bool("nilBody", r.Body == nil))
 	}
 
 	for _, b := range bindings {
