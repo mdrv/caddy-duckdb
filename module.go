@@ -710,7 +710,7 @@ func parsePartitionConfig(d *caddyfile.Dispenser) (*PartConfig, error) {
 			if !d.NextArg() {
 				return nil, d.ArgErr()
 			}
-			pc.Path = d.Val()
+			pc.Path = expandHome(d.Val())
 		case "filename":
 			if !d.NextArg() {
 				return nil, d.ArgErr()
@@ -744,6 +744,24 @@ func parsePartitionConfig(d *caddyfile.Dispenser) (*PartConfig, error) {
 		}
 	}
 	return pc, nil
+}
+
+func expandHome(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[2:])
+	}
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return home
+	}
+	return path
 }
 
 func parseFloat(s string) (float64, error) {
@@ -877,6 +895,11 @@ func (m *Middleware) archiveTable(ctx context.Context, table string, pc *PartCon
 	fname = strings.ReplaceAll(fname, "{year}", cutoff.Format("2006"))
 	fname = strings.ReplaceAll(fname, "{month}", cutoff.Format("01"))
 	archivePath := filepath.Join(pc.Path, fname)
+
+	if err := os.MkdirAll(filepath.Dir(archivePath), 0755); err != nil {
+		m.logger.Error("partition dir create failed", zap.String("path", filepath.Dir(archivePath)), zap.Error(err))
+		return
+	}
 
 	format := strings.ToUpper(pc.Format)
 	if format == "" {
