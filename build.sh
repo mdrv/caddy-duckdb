@@ -12,6 +12,9 @@ which xcaddy >/dev/null 2>&1 || go install github.com/caddyserver/xcaddy/cmd/xca
 export CGO_ENABLED=1
 export TMPDIR
 export GOCACHE
+# duckdb_use_lib: link against system libduckdb.so (Arch: pacman -S duckdb)
+# removes ~64 MB from binary; drop the flag for a fully static self-contained build
+export GOFLAGS="-tags=duckdb_use_lib"
 
 xcaddy build \
     --with github.com/mdrv/caddy-duckdb="$REPO_ROOT" \

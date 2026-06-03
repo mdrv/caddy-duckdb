@@ -53,19 +53,28 @@ location.example.com {
 
 ## Build
 
-Requires Go 1.22+, a C compiler (GCC/Clang), and `xcaddy`:
-
-```bash
-CGO_ENABLED=1 xcaddy build --with github.com/mdrv/caddy-duckdb=. --output ./caddy-duckdb
-```
-
-Or use the build script:
+Requires Go 1.22+, GCC/Clang, and the system `duckdb` package (`pacman -S duckdb` on Arch).
 
 ```bash
 ./build.sh
 ```
 
-Binary is ~134MB (statically links libduckdb via CGo).
+Or manually with `xcaddy`:
+
+```bash
+CGO_ENABLED=1 GOFLAGS="-tags=duckdb_use_lib" xcaddy build \
+    --with github.com/mdrv/caddy-duckdb=. --output ./caddy-duckdb
+```
+
+Binary is ~75 MB (dynamically linked against `/usr/lib/libduckdb.so`).\
+For a fully self-contained static binary, remove `-tags=duckdb_use_lib` (~139 MB, no runtime dependency).
+
+Verify the module is included:
+
+```bash
+./caddy-duckdb list-modules | grep duckdb
+# http.handlers.duckdb
+```
 
 ## Caddyfile directives
 
@@ -155,13 +164,12 @@ HTTP Request
 ## Files
 
 ```
-cmd/main.go              # xcaddy entry point
-module/
-  module.go              # Caddy module registration, Caddyfile parser, provisioning
-  handler.go             # ServeHTTP: routing, auth, rate limiting, output formatting
-  query_registry.go      # Query storage, execution, param binding, type coercion
-  writer.go              # Async batch writer for _requests table
-docs/01-v010.md          # Full design document
+cmd/main.go          # xcaddy entry point
+module.go            # Caddy module registration, Caddyfile parser, provisioning
+handler.go           # ServeHTTP: routing, auth, rate limiting, output formatting
+query_registry.go    # Query storage, execution, param binding, type coercion
+writer.go            # Async batch writer for _requests table
+docs/01-v010.md      # Full design document
 ```
 
 ## Status

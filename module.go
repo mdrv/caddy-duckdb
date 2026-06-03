@@ -15,7 +15,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	httpcaddyfile "github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	_ "github.com/marcboeker/go-duckdb/v2"
+	_ "github.com/duckdb/duckdb-go/v2"
 	"go.uber.org/zap"
 )
 
@@ -368,7 +368,11 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			m.APIToken = d.Val()
 		case "raw_sql":
-			m.RawSQL = true
+			if d.NextArg() {
+				m.RawSQL = d.Val() == "on" || d.Val() == "true"
+			} else {
+				m.RawSQL = true
+			}
 		case "max_rows":
 			if !d.NextArg() {
 				return d.ArgErr()
