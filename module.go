@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -55,11 +56,16 @@ type Middleware struct {
 	MaxRows       int            `json:"max_rows,omitempty"`
 	CORSOrigin    string         `json:"cors_origin,omitempty"`
 
+	ctx       caddy.Context
+	dbPathRaw string
+	dbOnce    sync.Once
+	dbInitErr error
+
 	db     *sql.DB
 	writer *BatchWriter
 	reg    *QueryRegistry
 	logger *zap.Logger
-	routes []matchedRoute
+	routes []*matchedRoute
 	mu     sync.RWMutex
 }
 
@@ -76,9 +82,40 @@ func (Middleware) CaddyModule() caddy.ModuleInfo {
 }
 
 func (m *Middleware) Provision(ctx caddy.Context) error {
+	m.ctx = ctx
 	m.logger = ctx.Logger(m)
 	m.applyDefaults()
 
+	repl := caddy.NewReplacer()
+	m.DBPath = repl.ReplaceAll(m.DBPath, "")
+	if m.Partitioning != nil {
+		m.Partitioning.Path = repl.ReplaceAll(m.Partitioning.Path, "")
+	}
+
+	if !strings.Contains(m.DBPath, "{") {
+		if err := m.initDB(); err != nil {
+			return err
+		}
+	} else {
+		m.logger.Warn("db_path contains unresolved placeholders, DB will open on first request",
+			zap.String("db_path", m.DBPath))
+	}
+
+	m.routes = make([]*matchedRoute, 0, len(m.Routes))
+	for i := range m.Routes {
+		mr, err := m.buildRoute(&m.Routes[i])
+		if err != nil {
+			return fmt.Errorf("route %s %s: %w", m.Routes[i].Method, m.Routes[i].Path, err)
+		}
+		m.routes = append(m.routes, mr)
+	}
+
+	go m.startMaintenance(m.ctx)
+
+	return nil
+}
+
+func (m *Middleware) initDB() error {
 	var err error
 	m.db, err = sql.Open("duckdb", m.buildDSN())
 	if err != nil {
@@ -110,29 +147,13 @@ func (m *Middleware) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("register query %q: %w", m.Queries[i].Name, err)
 		}
 	}
-
 	if err := m.reg.ValidateAll(); err != nil {
 		return fmt.Errorf("query validation: %w", err)
-	}
-
-	m.routes = make([]matchedRoute, 0, len(m.Routes))
-	for i := range m.Routes {
-		mr, err := m.buildRoute(&m.Routes[i])
-		if err != nil {
-			return fmt.Errorf("route %s %s: %w", m.Routes[i].Method, m.Routes[i].Path, err)
-		}
-		m.routes = append(m.routes, mr)
 	}
 
 	if !m.ReadOnly {
 		m.writer = NewBatchWriter(m.db, m.BatchSize, time.Duration(m.FlushInterval), m.logger)
 	}
-
-	if m.Partitioning != nil {
-		go m.startPartitioner(ctx)
-	}
-
-	go m.startMaintenance(ctx)
 
 	m.logger.Info("duckdb module provisioned",
 		zap.String("db_path", m.DBPath),
@@ -140,7 +161,31 @@ func (m *Middleware) Provision(ctx caddy.Context) error {
 		zap.Int("routes", len(m.Routes)),
 	)
 
+	if m.Partitioning != nil {
+		go m.startPartitioner(m.ctx)
+	}
+
 	return nil
+}
+
+func (m *Middleware) ensureDB(r *http.Request) error {
+	m.dbOnce.Do(func() {
+		if strings.Contains(m.DBPath, "{") || (m.Partitioning != nil && strings.Contains(m.Partitioning.Path, "{")) {
+			repl, ok := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
+			if ok {
+				m.DBPath = repl.ReplaceAll(m.DBPath, "")
+				if m.Partitioning != nil {
+					m.Partitioning.Path = repl.ReplaceAll(m.Partitioning.Path, "")
+				}
+			}
+			m.DBPath = expandHome(m.DBPath)
+			if m.Partitioning != nil {
+				m.Partitioning.Path = expandHome(m.Partitioning.Path)
+			}
+		}
+		m.dbInitErr = m.initDB()
+	})
+	return m.dbInitErr
 }
 
 func (m *Middleware) Cleanup() error {
@@ -256,7 +301,9 @@ func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			if !d.NextArg() {
 				return d.ArgErr()
 			}
-			m.DBPath = d.Val()
+			raw := d.Val()
+			m.dbPathRaw = raw
+			m.DBPath = expandHome(raw)
 		case "db_setting":
 			var kv SettingKV
 			if !d.NextArg() {
@@ -846,7 +893,7 @@ type rateCounter struct {
 	resetAt time.Time
 }
 
-func (m *Middleware) buildRoute(r *QueryRoute) (matchedRoute, error) {
+func (m *Middleware) buildRoute(r *QueryRoute) (*matchedRoute, error) {
 	mr := matchedRoute{
 		method:    strings.ToUpper(r.Method),
 		path:      r.Path,
@@ -858,7 +905,7 @@ func (m *Middleware) buildRoute(r *QueryRoute) (matchedRoute, error) {
 	if mr.rateLimit != nil {
 		mr.counter = make(map[string]*rateCounter)
 	}
-	return mr, nil
+	return &mr, nil
 }
 
 func (m *Middleware) startPartitioner(ctx context.Context) {

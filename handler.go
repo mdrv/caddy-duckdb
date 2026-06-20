@@ -15,8 +15,12 @@ import (
 )
 
 func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	if err := m.ensureDB(r); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return nil
+	}
 	for i := range m.routes {
-		mr := &m.routes[i]
+		mr := m.routes[i]
 		if mr.method != "*" && mr.method != r.Method {
 			continue
 		}
